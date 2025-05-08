@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Swap DApp</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        label {
+            font-weight: bold;
+        }
+        input, select, button {
+            padding: 8px;
+            font-size: 16px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Token Swap DApp</h2>
+        <div>
+            <label for="network">Chọn mạng:</label>
+            <select id="network">
+                <option value="1">Ethereum Mainnet</option>
+                <option value="56">Binance Smart Chain</option>
+            </select>
+        </div>
+        <div>
+            <button id="connectWallet">Kết nối Ví</button>
+        </div>
+        <div>
+            <label for="tokenA">Địa chỉ Token A:</label>
+            <input type="text" id="tokenA" placeholder="0x...">
+        </div>
+        <div>
+            <button id="approveTokenA" disabled>Approve Token A</button>
+        </div>
+        <div>
+            <label for="tokenB">Địa chỉ Token B:</label>
+            <input type="text" id="tokenB" placeholder="0x...">
+        </div>
+        <div>
+            <button id="approveTokenB" disabled>Approve Token B</button>
+        </div>
+        <div>
+            <label for="routerC">Địa chỉ Router C:</label>
+            <input type="text" id="routerC" placeholder="0x...">
+        </div>
+        <div>
+            <label for="amount">Số lượng Token A:</label>
+            <input type="number" id="amount" placeholder="Số lượng" step="any">
+        </div>
+        <div>
+            <button id="swap" disabled>Thực hiện Swap</button>
+        </div>
+        <div>
+            <span id="status"></span>
+        </div>
+    </div>
+
+    <!-- Thư viện ethers.js -->
+    <script src="https://cdn.ethers.io/lib/ethers-5.7.umd.min.js"></script>
+    <script>
+        // ABI chuẩn ERC20 cho hàm approve và decimals
+        const ERC20_ABI = [
+            "function approve(address spender, uint256 amount) public returns (bool)",
+            "function decimals() public view returns (uint8)"
+        ];
+
+        // ABI cho router (giả định tương tự Uniswap V2)
+        const ROUTER_ABI = [
+            "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) external returns (uint256[])"
+        ];
+
+        // Cấu hình mạng
+        const chainIdMap = {
+            "1": {
+                chainId: "0x1",
+                chainName: "Ethereum Mainnet",
+                rpcUrls: ["https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID"],
+                nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+                blockExplorerUrls: ["https://etherscan.io"]
+            },
+            "56": {
+                chainId: "0x38",
+                chainName: "Binance Smart Chain",
+                rpcUrls: ["https://bsc-dataseed.binance.org/"],
+                nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
+                blockExplorerUrls: ["https://bscscan.com"]
+            }
+        };
+
+        // Các biến toàn cục
+        let provider, signer, userAddress;
+
+        // DOM elements
+        const networkSelect = document.getElementById("network");
+        const connectWalletBtn = document.getElementById("connectWallet");
+        const tokenAInput = document.getElementById("tokenA");
+        const approveTokenABtn = document.getElementById("approveTokenA");
+        const tokenBInput = document.getElementById("tokenB");
+        const approveTokenBBtn = document.getElementById("approveTokenB");
+        const routerCInput = document.getElementById("routerC");
+        const amountInput = document.getElementById("amount");
+        const swapBtn = document.getElementById("swap");
+        const statusDiv = document.getElementById("status");
+
+        // Kết nối ví MetaMask
+        async function connectWallet() {
+            if (typeof window.ethereum !== "undefined") {
+                try {
+                    provider = new ethers.providers.Web3Provider(window.ethereum);
+                    await provider.send("eth_requestAccounts", []);
+                    signer = provider.getSigner();
+                    userAddress = await signer.getAddress();
+                    connectWalletBtn.textContent = `Đã kết nối: ${userAddress.slice(0, 6)}...`;
+                    connectWalletBtn.disabled = true;
+                    approveTokenABtn.disabled = false;
+                    approveTokenBBtn.disabled = false;
+                    swapBtn.disabled = false;
+                    await switchNetwork();
+                } catch (error) {
+                    statusDiv.textContent = `Lỗi kết nối ví: ${error.message}`;
+                }
+            } else {
+                statusDiv.textContent = "Vui lòng cài MetaMask!";
+            }
+        }
+
+        // Chuyển mạng
+        async function switchNetwork() {
+            const chainId = networkSelect.value;
+            const networkConfig = chainIdMap[chainId];
+            try {
+                await window.ethereum.request({
+                    method: "wallet_switchEthereumChain",
+                    params: [{ chainId: networkConfig.chainId }]
+                });
+            } catch (switchError) {
+                if (switchError.code === 4902) {
+                    try {
+                        await window.ethereum.request({
+                            method: "wallet_addEthereumChain",
+                            params: [networkConfig]
+                        });
+                    } catch (addError) {
+                        statusDiv.textContent = `Lỗi thêm mạng: ${addError.message}`;
+                    }
+                } else {
+                    statusDiv.textContent = `Lỗi chuyển mạng: ${switchError.message}`;
+                }
+            }
+        }
+
+        // Approve token
+        async function approveToken(tokenAddress, button) {
+            if (!provider || !signer) {
+                statusDiv.textContent = "Vui lòng kết nối ví trước!";
+                return;
+            }
+            if (!ethers.utils.isAddress(tokenAddress)) {
+                statusDiv.textContent = "Địa chỉ token không hợp lệ!";
+                return;
+            }
+            if (!ethers.utils.isAddress(routerCInput.value)) {
+                statusDiv.textContent = "Địa chỉ router không hợp lệ!";
+                return;
+            }
+            try {
+                const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+                const tx = await tokenContract.approve(
+                    routerCInput.value,
+                    ethers.constants.MaxUint256
+                );
+                button.disabled = true;
+                button.textContent = "Đang chờ xác nhận...";
+                await tx.wait();
+                button.textContent = "Đã approve";
+                statusDiv.textContent = "Approve thành công!";
+            } catch (error) {
+                statusDiv.textContent = `Lỗi approve: ${error.message}`;
+                button.disabled = false;
+                button.textContent = "Approve lại";
+            }
+        }
+
+        // Thực hiện swap
+        async function performSwap() {
+            if (!provider || !signer) {
+                statusDiv.textContent = "Vui lòng kết nối ví trước!";
+                return;
+            }
+            const tokenA = tokenAInput.value;
+            const tokenB = tokenBInput.value;
+            const routerC = routerCInput.value;
+            const amount = amountInput.value;
+
+            if (!ethers.utils.isAddress(tokenA) || !ethers.utils.isAddress(tokenB) || !ethers.utils.isAddress(routerC)) {
+                statusDiv.textContent = "Địa chỉ token hoặc router không hợp lệ!";
+                return;
+            }
+            if (!amount || isNaN(amount) || amount <= 0) {
+                statusDiv.textContent = "Số lượng không hợp lệ!";
+                return;
+            }
+
+            try {
+                const tokenAContract = new ethers.Contract(tokenA, ERC20_ABI, signer);
+                const decimals = await tokenAContract.decimals();
+                const amountIn = ethers.utils.parseUnits(amount, decimals);
+                const amountOutMin = amountIn.mul(90).div(100); // Giảm 10% để tránh slippage
+                const path = [tokenA, tokenB, tokenA]; // Đường dẫn A -> B -> A
+                const deadline = Math.floor(Date.now() / 1000) + 600; // 10 phút
+
+                const routerContract = new ethers.Contract(routerC, ROUTER_ABI, signer);
+                const tx = await routerContract.swapExactTokensForTokens(
+                    amountIn,
+                    amountOutMin,
+                    path,
+                    userAddress,
+                    deadline,
+                    { gasLimit: 500000 }
+                );
+                swapBtn.disabled = true;
+                swapBtn.textContent = "Đang chờ xác nhận...";
+                await tx.wait();
+                swapBtn.textContent = "Thực hiện Swap";
+                swapBtn.disabled = false;
+                statusDiv.textContent = "Swap thành công!";
+            } catch (error) {
+                statusDiv.textContent = `Lỗi swap: ${error.message}`;
+                swapBtn.disabled = false;
+                swapBtn.textContent = "Thực hiện Swap";
+            }
+        }
+
+        // Sự kiện
+        connectWalletBtn.addEventListener("click", connectWallet);
+        networkSelect.addEventListener("change", switchNetwork);
+        approveTokenABtn.addEventListener("click", () => approveToken(tokenAInput.value, approveTokenABtn));
+        approveTokenBBtn.addEventListener("click", () => approveToken(tokenBInput.value, approveTokenBBtn));
+        swapBtn.addEventListener("click", performSwap);
+    </script>
+</body>
+</html>
